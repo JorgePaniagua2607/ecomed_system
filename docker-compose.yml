@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: adminpassword
+      POSTGRES_DB: ecomed_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ecomed_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  ecomed_pgdata:

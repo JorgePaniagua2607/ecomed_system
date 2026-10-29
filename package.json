@@ -1,0 +1,14 @@
+{
+  "name": "ecomed-monorepo",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint"
+  },
+  "devDependencies": {
+    "turbo": "latest",
+    "typescript": "^5.0.0"
+  },
+  "packageManager": "pnpm@12.15.0"
+}
