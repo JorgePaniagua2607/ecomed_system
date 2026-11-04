@@ -91,18 +91,17 @@ model StudyService {
   updatedAt       DateTime        @updatedAt
 
   orderItems      OrderItem[]
-  reportFormats   ReportFormat[]
+  reportFormat    ReportFormat?   // <-- Solo dejamos la relación 1 a 1
 
   @@index([serviceType, isActive])
 }
 
 model ReportFormat {
   id              String         @id @default(cuid())
-  name            String
-  studyServiceId  String
+  studyServiceId  String         @unique
   studyService    StudyService   @relation(fields: [studyServiceId], references: [id])
-  documentHtml    String         @db.Text
-  boundingBoxes   Json           
+  baseText        String         @default("") @db.Text
+  fields          Json           @default("[]")
   isActive        Boolean        @default(true)
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt

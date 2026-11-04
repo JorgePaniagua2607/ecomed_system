@@ -83,7 +83,7 @@ export const createPatientSchema = z.object({
 
 export const updatePatientSchema = createPatientSchema.partial();
 
-// --- FASE 3.2 y 3.3: CREADOR DE ÓRDENES Y MÓDULO DE PAGOS ---
+// --- FASE 3.2, 3.3 y 3.4: ÓRDENES, PAGOS Y SALA DE ESPERA ---
 export const OrderOriginEnum = z.enum(['POR_SU_CUENTA', 'RECOMENDACION', 'PROMOCION']);
 export const OrderStatusEnum = z.enum(['EN_ESPERA', 'EN_ATENCION', 'ATENDIDO', 'CANCELADO']);
 export const PaymentMethodEnum = z.enum(['EFECTIVO', 'QR', 'MIXTO', 'POR_COMPROMISO']);
@@ -131,6 +131,98 @@ export const settleCommitmentSchema = z.object({
   amountQr: z.coerce.number().min(0).optional(),
 });
 
+export const updateQueueStatusSchema = z.object({
+  status: OrderStatusEnum,
+});
+
+// --- FASE 4.1 y 4.2: ESQUEMAS POSICIONALES Y PLANTILLAS A4 ---
+const BOUNDARY_TOLERANCE = 100.05;
+
+export const ReportFieldTypeEnum = z.enum(['text', 'textarea', 'number', 'date']);
+export const TemplateFieldTypeSchema = ReportFieldTypeEnum;
+
+export const positionalRectangleSchema = z
+  .object({
+    id: z.string().min(1, 'El ID del rectángulo es requerido'),
+    name: z
+      .string()
+      .min(1, 'El nombre técnico (name) del campo es requerido')
+      .regex(
+        /^[a-zA-Z][a-zA-Z0-9_]*$/,
+        'El nombre técnico debe iniciar con letra y contener solo letras, números o guiones bajos'
+      ),
+    label: z.string().min(1, 'La etiqueta visible (label) es requerida'),
+    type: ReportFieldTypeEnum,
+    xPercent: z.coerce.number().min(0, 'xPercent no puede ser menor a 0').max(100, 'xPercent no puede superar 100'),
+    yPercent: z.coerce.number().min(0, 'yPercent no puede ser menor a 0').max(100, 'yPercent no puede superar 100'),
+    widthPercent: z.coerce
+      .number()
+      .gt(0, 'widthPercent debe ser mayor a 0')
+      .max(100, 'widthPercent no puede superar 100'),
+    heightPercent: z.coerce
+      .number()
+      .gt(0, 'heightPercent debe ser mayor a 0')
+      .max(100, 'heightPercent no puede superar 100'),
+    fontSize: z.coerce
+      .number()
+      .min(6, 'El tamaño de fuente mínimo es 6pt')
+      .max(72, 'El tamaño de fuente máximo es 72pt')
+      .default(11),
+  })
+  .superRefine((rect, ctx) => {
+    if (rect.xPercent + rect.widthPercent > BOUNDARY_TOLERANCE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['widthPercent'],
+        message: `El campo "${rect.label}" desborda el ancho de la hoja A4 (xPercent + widthPercent supera el 100%)`,
+      });
+    }
+    if (rect.yPercent + rect.heightPercent > BOUNDARY_TOLERANCE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['heightPercent'],
+        message: `El campo "${rect.label}" desborda el alto de la hoja A4 (yPercent + heightPercent supera el 100%)`,
+      });
+    }
+  });
+
+export const PositionalRectSchema = positionalRectangleSchema;
+
+export const positionalRectangleArraySchema = z
+  .array(positionalRectangleSchema)
+  .superRefine((rects, ctx) => {
+    const seenIds = new Set<string>();
+    const seenNames = new Set<string>();
+
+    rects.forEach((rect, idx) => {
+      if (seenIds.has(rect.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [idx, 'id'],
+          message: `ID de rectángulo duplicado: "${rect.id}"`,
+        });
+      }
+      seenIds.add(rect.id);
+
+      if (seenNames.has(rect.name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [idx, 'name'],
+          message: `Nombre de campo duplicado en la plantilla: "${rect.name}"`,
+        });
+      }
+      seenNames.add(rect.name);
+    });
+  });
+
+export const PositionalRectArraySchema = positionalRectangleArraySchema;
+
+export const upsertReportFormatSchema = z.object({
+  studyServiceId: z.string().min(1, 'El ID del servicio de estudio (studyServiceId) es requerido'),
+  baseText: z.string().default(''),
+  fields: positionalRectangleArraySchema.default([]),
+});
+
 export type LoginDTO = z.infer<typeof loginSchema>;
 export type ChangePasswordDTO = z.infer<typeof changePasswordSchema>;
 export type CreateStaffDTO = z.infer<typeof createStaffSchema>;
@@ -143,3 +235,7 @@ export type CreatePatientDTO = z.infer<typeof createPatientSchema>;
 export type UpdatePatientDTO = z.infer<typeof updatePatientSchema>;
 export type CreateOrderDTO = z.infer<typeof createOrderSchema>;
 export type SettleCommitmentDTO = z.infer<typeof settleCommitmentSchema>;
+export type UpdateQueueStatusDTO = z.infer<typeof updateQueueStatusSchema>;
+export type PositionalRectangleDTO = z.infer<typeof positionalRectangleSchema>;
+export type PositionalRect = PositionalRectangleDTO;
+export type UpsertReportFormatDTO = z.infer<typeof upsertReportFormatSchema>;
