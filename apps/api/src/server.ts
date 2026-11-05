@@ -28,6 +28,7 @@ app.use('/api/v1/orders', orderRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/queue', queueRoutes);
 app.use('/api/v1/report-formats', reportFormatRoutes);
+app.use('/api/v1/reports', reportFormatRoutes);
 
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'Backend Ecomed funcionando 🚀' });

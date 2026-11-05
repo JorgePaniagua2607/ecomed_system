@@ -239,3 +239,15 @@ export type UpdateQueueStatusDTO = z.infer<typeof updateQueueStatusSchema>;
 export type PositionalRectangleDTO = z.infer<typeof positionalRectangleSchema>;
 export type PositionalRect = PositionalRectangleDTO;
 export type UpsertReportFormatDTO = z.infer<typeof upsertReportFormatSchema>;
+
+// --- FASE 4.3: GENERACIÓN DE INFORME PDF A4 ---
+export const generateReportSchema = z.object({
+  studyServiceId: z.string().min(1, 'El ID del estudio (studyServiceId) es requerido'),
+  orderId: z.string().optional(),
+  fieldValues: z.record(
+    z.string(),
+    z.union([z.string(), z.number(), z.boolean(), z.null(), z.undefined()])
+  ),
+});
+
+export type GenerateReportInput = z.infer<typeof generateReportSchema>;

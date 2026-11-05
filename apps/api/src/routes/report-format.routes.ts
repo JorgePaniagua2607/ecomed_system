@@ -4,12 +4,17 @@ import {
   getReportFormatByStudy,
   upsertReportFormat,
   deleteReportFormat,
+  generateReportPdf,
 } from '../controllers/report-format.controller';
 import { verifyToken, requireRole } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 router.use(verifyToken);
+
+// Fase 4.3: Motor de renderizado PDF (POST /generate y POST /:studyServiceId/generate)
+router.post('/generate', requireRole(['ADMIN', 'PERSONAL']), generateReportPdf);
+router.post('/:studyServiceId/generate', requireRole(['ADMIN', 'PERSONAL']), generateReportPdf);
 
 // Consulta operativa para ADMIN y PERSONAL (para cargar formatos en atención o edición)
 router.get('/', requireRole(['ADMIN', 'PERSONAL']), getAllReportFormats);
