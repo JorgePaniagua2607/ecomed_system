@@ -1,5 +1,5 @@
-import A4ReportWorkspace from '@/components/A4ReportWorkspace';
+import EcomedSuite from '@/components/EcomedSuite';
 
 export default function HomePage() {
-  return <A4ReportWorkspace />;
+  return <EcomedSuite />;
 }

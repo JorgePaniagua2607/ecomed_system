@@ -1,0 +1,1 @@
+{"version":3,"file":"queue.controller.d.ts","sourceRoot":"","sources":["queue.controller.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,QAAQ,EAAE,MAAM,SAAS,CAAC;AAGxC,OAAO,KAAK,EAAE,WAAW,EAAE,MAAM,gCAAgC,CAAC;AAGlE,eAAO,MAAM,qBAAqB,SAAgB,WAAW,OAAO,QAAQ,kBAsD3E,CAAC;AAGF,eAAO,MAAM,eAAe,SAAgB,WAAW,OAAO,QAAQ,4DA+BrE,CAAC;AAGF,eAAO,MAAM,sBAAsB,QAAe,WAAW,OAAO,QAAQ,4DA6C3E,CAAC"}

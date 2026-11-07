@@ -3,45 +3,50 @@ import { prisma } from '@ecomed/database';
 import { createStudySchema, updateStudySchema } from '@ecomed/shared-types';
 import type { AuthRequest } from '../middlewares/auth.middleware';
 
+// Listar estudios del catálogo
 export const getAllStudies = async (req: AuthRequest, res: Response) => {
   try {
-    const onlyActive = req.query.active === 'true' || req.user?.role === 'PERSONAL';
-    const serviceType = req.query.serviceType as 'HACER_ECOGRAFIA' | 'SOLO_INFORME' | undefined;
-    const reportCategory = req.query.reportCategory as 'ECOGRAFIA' | 'TOMOGRAFIA' | undefined;
-
-    const whereClause: any = {};
-    if (onlyActive) whereClause.isActive = true;
-    if (serviceType) whereClause.serviceType = serviceType;
-    if (reportCategory) whereClause.reportCategory = reportCategory;
-
+    const onlyActive = req.query.onlyActive === 'true';
     const studies = await prisma.studyService.findMany({
-      where: whereClause,
-      orderBy: [{ serviceType: 'asc' }, { name: 'asc' }],
+      where: onlyActive ? { isActive: true } : undefined,
+      include: { reportFormat: true },
+      orderBy: { name: 'asc' },
     });
 
-    res.json({ success: true, data: studies });
+    res.json({
+      success: true,
+      data: studies,
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error al obtener el catálogo de estudios.' });
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener el catálogo de estudios.',
+    });
   }
 };
 
+// Crear nuevo estudio en el catálogo
 export const createStudy = async (req: AuthRequest, res: Response) => {
   try {
     const result = createStudySchema.safeParse(req.body);
     if (!result.success) {
-      return res.status(400).json({ success: false, errors: result.error.errors });
+      return res.status(400).json({
+        success: false,
+        errors: result.error.errors,
+      });
     }
 
-    const { name, serviceType, reportCategory, normalPrice, promoPrice } = result.data;
-
-    // Si es HACER_ECOGRAFIA, su categoría implícita siempre es ECOGRAFIA
-    const resolvedCategory = serviceType === 'HACER_ECOGRAFIA' ? 'ECOGRAFIA' : reportCategory;
+    const { name, serviceType, reportCategory, normalPrice, promoPrice } =
+      result.data;
 
     const newStudy = await prisma.studyService.create({
       data: {
         name,
         serviceType,
-        reportCategory: resolvedCategory,
+        reportCategory:
+          serviceType === 'SOLO_INFORME'
+            ? reportCategory ?? 'ECOGRAFIA'
+            : reportCategory ?? null,
         normalPrice,
         promoPrice,
       },
@@ -49,31 +54,51 @@ export const createStudy = async (req: AuthRequest, res: Response) => {
 
     res.status(201).json({
       success: true,
-      message: 'Estudio registrado correctamente en el catálogo.',
+      message: 'Estudio clínico registrado exitosamente.',
       data: newStudy,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error interno al registrar el estudio.' });
+    res.status(500).json({
+      success: false,
+      message: 'Error interno al crear el estudio.',
+    });
   }
 };
 
+// Actualizar un estudio existente
 export const updateStudy = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
+
+    const existingStudy = await prisma.studyService.findUnique({
+      where: { id },
+    });
+
+    if (!existingStudy) {
+      return res.status(404).json({
+        success: false,
+        message: 'Estudio no encontrado.',
+      });
+    }
+
     const result = updateStudySchema.safeParse(req.body);
     if (!result.success) {
-      return res.status(400).json({ success: false, errors: result.error.errors });
+      return res.status(400).json({
+        success: false,
+        errors: result.error.errors,
+      });
     }
 
-    const existingStudy = await prisma.studyService.findUnique({ where: { id } });
-    if (!existingStudy) {
-      return res.status(404).json({ success: false, message: 'Estudio no encontrado en el catálogo.' });
-    }
+    const nextNormal =
+      result.data.normalPrice !== undefined
+        ? Number(result.data.normalPrice)
+        : Number(existingStudy.normalPrice);
+    const nextPromo =
+      result.data.promoPrice !== undefined
+        ? Number(result.data.promoPrice)
+        : Number(existingStudy.promoPrice);
 
-    const finalNormalPrice = result.data.normalPrice ?? Number(existingStudy.normalPrice);
-    const finalPromoPrice = result.data.promoPrice ?? Number(existingStudy.promoPrice);
-
-    if (finalPromoPrice > finalNormalPrice) {
+    if (nextPromo > nextNormal) {
       return res.status(400).json({
         success: false,
         message: 'El precio promocional no puede ser mayor al precio normal.',
@@ -91,38 +116,60 @@ export const updateStudy = async (req: AuthRequest, res: Response) => {
       data: updatedStudy,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error al actualizar el estudio.' });
+    res.status(500).json({
+      success: false,
+      message: 'Error interno al actualizar el estudio.',
+    });
   }
 };
 
+// Eliminar o desactivar un estudio (Soft-delete si tiene órdenes o plantilla A4 asociada)
 export const deleteStudy = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
     const existingStudy = await prisma.studyService.findUnique({
       where: { id },
-      include: { _count: { select: { orderItems: true, reportFormats: true } } },
+      include: {
+        reportFormat: true,
+        _count: { select: { orderItems: true } },
+      },
     });
 
     if (!existingStudy) {
-      return res.status(404).json({ success: false, message: 'Estudio no encontrado.' });
+      return res.status(404).json({
+        success: false,
+        message: 'Estudio no encontrado.',
+      });
     }
 
-    // Si ya tiene órdenes o plantillas de informes asociadas, se desactiva lógicamente
-    if (existingStudy._count.orderItems > 0 || existingStudy._count.reportFormats > 0) {
-      await prisma.studyService.update({
+    if (
+      existingStudy._count.orderItems > 0 ||
+      Boolean(existingStudy.reportFormat)
+    ) {
+      const deactivated = await prisma.studyService.update({
         where: { id },
         data: { isActive: false },
       });
+
       return res.json({
         success: true,
-        message: 'El estudio posee historial clínico o formatos asociados, por lo que fue desactivado.',
+        message:
+          'El estudio posee historial clínico o plantilla asociada; fue desactivado (soft-delete).',
+        data: deactivated,
       });
     }
 
     await prisma.studyService.delete({ where: { id } });
-    res.json({ success: true, message: 'Estudio eliminado correctamente del catálogo.' });
+
+    res.json({
+      success: true,
+      message: 'Estudio eliminado definitivamente del catálogo.',
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error al eliminar el estudio.' });
+    res.status(500).json({
+      success: false,
+      message: 'Error interno al eliminar el estudio.',
+    });
   }
 };

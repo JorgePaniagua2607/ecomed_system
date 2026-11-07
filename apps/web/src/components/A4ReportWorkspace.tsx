@@ -13,6 +13,10 @@ import {
   CheckCircle2,
   AlertCircle,
   Download,
+  Users,
+  PhoneCall,
+  Flame,
+  CheckCheck,
 } from 'lucide-react';
 
 export type FieldType = 'text' | 'textarea' | 'number' | 'date';
@@ -36,22 +40,47 @@ interface StudyService {
   reportCategory?: string | null;
 }
 
+interface QueueOrder {
+  id: string;
+  status: 'EN_ESPERA' | 'EN_ATENCION' | 'ATENDIDO' | 'CANCELADO';
+  isEmergency: boolean;
+  queuePriority: number;
+  createdAt: string;
+  patient?: {
+    id: string;
+    fullName: string;
+    phone: string;
+  };
+  items?: Array<{
+    id: string;
+    studyServiceId?: string;
+    studyId?: string;
+    studyService?: StudyService;
+    study?: StudyService;
+  }>;
+  studies?: StudyService[];
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api/v1';
 
-// Dimensiones base en píxeles equivalentes a 210mm x 297mm (A4 a 96 DPI)
 const A4_WIDTH_PX = 794;
 const A4_HEIGHT_PX = 1123;
 
 export default function A4ReportWorkspace() {
-  // Autenticación y conexión con Backend
+  // Autenticación
   const [token, setToken] = useState<string>('');
   const [username, setUsername] = useState<string>('admin');
   const [password, setPassword] = useState<string>('admin123');
   const [authStatus, setAuthStatus] = useState<string>('');
 
-  // Catálogo de estudios y estudio activo
+  // Catálogo y estudio activo
   const [studies, setStudies] = useState<StudyService[]>([]);
   const [selectedStudyId, setSelectedStudyId] = useState<string>('');
+
+  // Cola de Sala de Espera (Fase 3 + Fase 4)
+  const [queueOrders, setQueueOrders] = useState<QueueOrder[]>([]);
+  const [activeOrder, setActiveOrder] = useState<QueueOrder | null>(null);
+  const [completeOrderOnGenerate, setCompleteOrderOnGenerate] = useState<boolean>(true);
 
   // Estado de la Plantilla A4
   const [baseText, setBaseText] = useState<string>(
@@ -60,14 +89,14 @@ export default function A4ReportWorkspace() {
   const [fields, setFields] = useState<PositionalField[]>([]);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
 
-  // Modo de vista: 'builder' (Admin react-rnd) | 'filler' (Médico llenado + PDF)
-  const [activeTab, setActiveTab] = useState<'builder' | 'filler'>('builder');
+  // Pestañas: 'queue' (Sala de Espera + Atención) | 'builder' (Constructor Admin)
+  const [activeTab, setActiveTab] = useState<'filler' | 'builder'>('filler');
 
-  // Estado del Llenado Clínico y PDF
+  // Llenado Clínico y PDF
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
 
-  // Feedback visual
+  // Estado UI
   const [loading, setLoading] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null
@@ -75,13 +104,13 @@ export default function A4ReportWorkspace() {
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
-  // Cargar token guardado en localStorage al iniciar
   useEffect(() => {
     const savedToken = localStorage.getItem('ecomed_token');
     if (savedToken) {
       setToken(savedToken);
-      setAuthStatus('Conectado con token guardado');
+      setAuthStatus('Sesión activa');
       fetchStudies(savedToken);
+      fetchQueue(savedToken);
     }
   }, []);
 
@@ -90,7 +119,6 @@ export default function A4ReportWorkspace() {
     setTimeout(() => setFeedback(null), 5000);
   };
 
-  // Login rápido contra POST /api/v1/auth/login
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -109,9 +137,9 @@ export default function A4ReportWorkspace() {
 
       localStorage.setItem('ecomed_token', jwt);
       setToken(jwt);
-      setAuthStatus(`Sesión activa (${username})`);
+      setAuthStatus(`Conectado (${username})`);
       showMessage('success', 'Autenticación exitosa con el backend.');
-      await fetchStudies(jwt);
+      await Promise.all([fetchStudies(jwt), fetchQueue(jwt)]);
     } catch (err: any) {
       showMessage('error', err.message || 'Error al iniciar sesión');
     } finally {
@@ -119,7 +147,6 @@ export default function A4ReportWorkspace() {
     }
   };
 
-  // Obtener catálogo de estudios (GET /api/v1/studies)
   const fetchStudies = async (jwtToken = token) => {
     if (!jwtToken) return;
     try {
@@ -140,13 +167,101 @@ export default function A4ReportWorkspace() {
         setSelectedStudyId(list[0].id);
         await loadTemplateForStudy(list[0].id, jwtToken);
       }
-    } catch (err) {
+    } catch {
       showMessage('error', 'No se pudo cargar el catálogo de estudios.');
     }
   };
 
-  // Cargar la plantilla A4 de un estudio (GET /api/v1/report-formats/:studyServiceId)
-  const loadTemplateForStudy = async (studyId: string, jwtToken = token) => {
+  // Consultar Cola Reactiva de Sala de Espera (GET /api/v1/queue)
+  const fetchQueue = async (jwtToken = token) => {
+    if (!jwtToken) return;
+    try {
+      const res = await fetch(`${API_BASE}/queue`, {
+        headers: { Authorization: `Bearer ${jwtToken}` },
+      });
+      const json = await res.json();
+      const list: QueueOrder[] = Array.isArray(json)
+        ? json
+        : Array.isArray(json.data)
+        ? json.data
+        : Array.isArray(json.queue)
+        ? json.queue
+        : [];
+
+      setQueueOrders(list);
+    } catch {
+      // Silencioso si no hay órdenes
+    }
+  };
+
+  // Llamar al siguiente paciente en la cola (POST /api/v1/queue/call-next)
+  const handleCallNext = async () => {
+    if (!token) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/queue/call-next`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.message || 'No hay pacientes en espera para llamar.');
+      }
+
+      const calledOrder: QueueOrder | null = json.data || json.order || null;
+      await fetchQueue(token);
+
+      if (calledOrder) {
+        await handleSelectOrderForAttention(calledOrder);
+        showMessage(
+          'success',
+          `Paciente llamado a consultorio: ${calledOrder.patient?.fullName || calledOrder.id}`
+        );
+      } else {
+        showMessage('success', json.message || 'Siguiente paciente llamado.');
+      }
+    } catch (err: any) {
+      showMessage('error', err.message || 'Error al llamar al siguiente paciente.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Extraer el primer studyServiceId de una orden de la cola
+  const extractOrderStudyId = (order: QueueOrder): string | null => {
+    if (order.items && order.items.length > 0) {
+      const first = order.items[0];
+      return (
+        first.studyServiceId ||
+        first.studyId ||
+        first.studyService?.id ||
+        first.study?.id ||
+        null
+      );
+    }
+    if (order.studies && order.studies.length > 0) {
+      return order.studies[0].id;
+    }
+    return null;
+  };
+
+  // Seleccionar un paciente de la cola para redactar su informe
+  const handleSelectOrderForAttention = async (order: QueueOrder) => {
+    setActiveOrder(order);
+    setActiveTab('filler');
+
+    const orderStudyId = extractOrderStudyId(order) || selectedStudyId;
+    if (orderStudyId) {
+      setSelectedStudyId(orderStudyId);
+      await loadTemplateForStudy(orderStudyId, token, order);
+    }
+  };
+
+  const loadTemplateForStudy = async (
+    studyId: string,
+    jwtToken = token,
+    orderContext: QueueOrder | null = activeOrder
+  ) => {
     if (!studyId || !jwtToken) return;
     setLoading(true);
     setPdfUrl(null);
@@ -156,11 +271,9 @@ export default function A4ReportWorkspace() {
       });
 
       if (res.status === 404) {
-        // Estudio sin plantilla previa: inicializar lienzo limpio
         setFields([]);
         setSelectedFieldId(null);
         setFieldValues({});
-        showMessage('success', 'Estudio sin plantilla previa. Lienzo A4 listo para diseñar.');
         return;
       }
 
@@ -181,20 +294,30 @@ export default function A4ReportWorkspace() {
         setFields(loadedFields);
         setSelectedFieldId(loadedFields[0]?.id || null);
 
+        // Pre-llenar automáticamente paciente y fecha si hay una orden activa seleccionada
+        const todayStr = new Date().toISOString().split('T')[0];
         const initialValues: Record<string, string> = {};
+
         loadedFields.forEach((f) => {
-          initialValues[f.name] = '';
+          const keyLower = `${f.name} ${f.label}`.toLowerCase();
+          if (orderContext?.patient?.fullName && keyLower.includes('paciente')) {
+            initialValues[f.name] = `PACIENTE: ${orderContext.patient.fullName}`;
+          } else if (f.type === 'date' || keyLower.includes('fecha')) {
+            initialValues[f.name] = todayStr;
+          } else {
+            initialValues[f.name] = '';
+          }
         });
+
         setFieldValues(initialValues);
       }
-    } catch (err) {
+    } catch {
       showMessage('error', 'Error al consultar la plantilla del estudio.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Agregar nuevo rectángulo dinámico al lienzo A4
   const handleAddField = (type: FieldType = 'text') => {
     const index = fields.length + 1;
     const newField: PositionalField = {
@@ -213,14 +336,12 @@ export default function A4ReportWorkspace() {
     setSelectedFieldId(newField.id);
   };
 
-  // Actualizar propiedades del campo seleccionado
   const updateSelectedField = (patch: Partial<PositionalField>) => {
     if (!selectedFieldId) return;
     setFields((prev) =>
       prev.map((f) => {
         if (f.id !== selectedFieldId) return f;
         const updated = { ...f, ...patch };
-        // Garantizar que no desborde el 100% de la hoja A4
         if (updated.xPercent + updated.widthPercent > 100) {
           updated.xPercent = Number(Math.max(0, 100 - updated.widthPercent).toFixed(2));
         }
@@ -239,7 +360,6 @@ export default function A4ReportWorkspace() {
     }
   };
 
-  // Guardar Plantilla A4 en el Backend (PUT /api/v1/report-formats/:studyServiceId)
   const handleSaveTemplate = async () => {
     if (!selectedStudyId) {
       showMessage('error', 'Selecciona un estudio primero.');
@@ -275,7 +395,6 @@ export default function A4ReportWorkspace() {
     }
   };
 
-  // Generar PDF real enviando fieldValues a POST /api/v1/reports/generate
   const handleGeneratePdf = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedStudyId) return;
@@ -290,6 +409,8 @@ export default function A4ReportWorkspace() {
         },
         body: JSON.stringify({
           studyServiceId: selectedStudyId,
+          orderId: activeOrder?.id,
+          completeOrder: Boolean(activeOrder && completeOrderOnGenerate),
           fieldValues,
         }),
       });
@@ -305,7 +426,17 @@ export default function A4ReportWorkspace() {
       }
       const url = URL.createObjectURL(blob);
       setPdfUrl(url);
-      showMessage('success', 'PDF A4 compilado por Puppeteer correctamente.');
+
+      if (activeOrder && completeOrderOnGenerate) {
+        showMessage(
+          'success',
+          `PDF generado y orden de ${activeOrder.patient?.fullName || 'paciente'} marcada como ATENDIDO.`
+        );
+        setActiveOrder(null);
+        await fetchQueue(token);
+      } else {
+        showMessage('success', 'PDF A4 compilado por Puppeteer correctamente.');
+      }
     } catch (err: any) {
       showMessage('error', err.message || 'Error generando el informe PDF.');
     } finally {
@@ -314,24 +445,26 @@ export default function A4ReportWorkspace() {
   };
 
   const selectedField = fields.find((f) => f.id === selectedFieldId) || null;
+  const waitingOrders = queueOrders.filter(
+    (o) => o.status === 'EN_ESPERA' || o.status === 'EN_ATENCION'
+  );
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col">
-      {/* Barra Superior de Conexión y Selección de Estudio */}
+      {/* Header Principal */}
       <header className="bg-slate-900 text-white px-6 py-3 shadow-md flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <LayoutTemplate className="w-6 h-6 text-sky-400" />
           <div>
             <h1 className="font-bold text-base tracking-tight">
-              ECOMED · Motor de Plantillas e Informes A4
+              ECOMED · Estación Médica de Informes A4 y Sala de Espera
             </h1>
             <p className="text-xs text-slate-400">
-              Fase 4: Constructor Drag & Drop (react-rnd) + Compilador PDF (Puppeteer)
+              Flujo Integrado Fase 3 (Cola de Prioridad) + Fase 4 (Plantillas react-rnd y Puppeteer)
             </p>
           </div>
         </div>
 
-        {/* Login Rápido si no hay sesión o para cambiar usuario */}
         <form onSubmit={handleLogin} className="flex items-center gap-2 text-xs">
           <input
             type="text"
@@ -359,11 +492,73 @@ export default function A4ReportWorkspace() {
         </form>
       </header>
 
-      {/* Sub-barra de Estudio y Selector de Modo */}
+      {/* Barra de Sala de Espera Activa (Call-Next + Pacientes en Cola) */}
+      <div className="bg-slate-800 text-slate-100 px-6 py-2.5 border-b border-slate-700 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-xs font-bold uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
+            <Users className="w-4 h-4" />
+            Sala de Espera ({waitingOrders.length}):
+          </span>
+
+          {waitingOrders.length === 0 ? (
+            <span className="text-xs text-slate-400 italic">
+              Sin pacientes en cola actualmente
+            </span>
+          ) : (
+            <div className="flex items-center gap-2 overflow-x-auto py-0.5">
+              {waitingOrders.map((ord) => {
+                const isSelectedOrder = activeOrder?.id === ord.id;
+                return (
+                  <button
+                    key={ord.id}
+                    type="button"
+                    onClick={() => handleSelectOrderForAttention(ord)}
+                    className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1.5 border transition ${
+                      isSelectedOrder
+                        ? 'bg-emerald-600 border-emerald-400 text-white shadow'
+                        : ord.status === 'EN_ATENCION'
+                        ? 'bg-sky-900/80 border-sky-500 text-sky-200 hover:bg-sky-800'
+                        : 'bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600'
+                    }`}
+                  >
+                    {ord.isEmergency && <Flame className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
+                    <span>{ord.patient?.fullName || `Orden #${ord.id.slice(0, 6)}`}</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-black/30 font-mono">
+                      {ord.status}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleCallNext}
+            disabled={loading || !token}
+            className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white text-xs font-bold px-3 py-1.5 rounded flex items-center gap-1.5 shadow transition"
+          >
+            <PhoneCall className="w-3.5 h-3.5" />
+            Llamar Siguiente (call-next)
+          </button>
+          <button
+            type="button"
+            onClick={() => fetchQueue()}
+            className="p-1.5 text-slate-300 hover:text-white bg-slate-700 rounded"
+            title="Refrescar Sala de Espera"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Sub-barra de Estudio y Cambio de Modo */}
       <div className="bg-white border-b border-slate-200 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <label className="text-xs font-semibold uppercase text-slate-500">
-            Estudio del Catálogo:
+            Estudio / Plantilla Activa:
           </label>
           <select
             value={selectedStudyId}
@@ -382,30 +577,9 @@ export default function A4ReportWorkspace() {
               </option>
             ))}
           </select>
-          <button
-            type="button"
-            onClick={() => fetchStudies()}
-            className="p-1.5 text-slate-600 hover:text-slate-900 border border-slate-200 rounded"
-            title="Recargar catálogo"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
         </div>
 
-        {/* Pestañas de Modo */}
         <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-lg border border-slate-200">
-          <button
-            type="button"
-            onClick={() => setActiveTab('builder')}
-            className={`px-3.5 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition ${
-              activeTab === 'builder'
-                ? 'bg-white text-sky-700 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <LayoutTemplate className="w-4 h-4" />
-            1. Constructor de Plantilla A4 (Admin)
-          </button>
           <button
             type="button"
             onClick={() => setActiveTab('filler')}
@@ -416,12 +590,24 @@ export default function A4ReportWorkspace() {
             }`}
           >
             <FileText className="w-4 h-4" />
-            2. Llenado Clínico y PDF (Médico)
+            1. Atención Clínica y Emisión PDF (Médico)
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('builder')}
+            className={`px-3.5 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition ${
+              activeTab === 'builder'
+                ? 'bg-white text-sky-700 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <LayoutTemplate className="w-4 h-4" />
+            2. Constructor de Plantilla A4 (Admin)
           </button>
         </div>
       </div>
 
-      {/* Notificaciones flotantes */}
+      {/* Notificaciones */}
       {feedback && (
         <div
           className={`mx-6 mt-4 px-4 py-2.5 rounded-lg border flex items-center gap-2 text-sm font-medium ${
@@ -440,11 +626,138 @@ export default function A4ReportWorkspace() {
       )}
 
       {/* ===================================================================== */}
-      {/* MODO 1: CONSTRUCTOR DE PLANTILLAS A4 CON REACT-RND                    */}
+      {/* MODO 1: ATENCIÓN CLÍNICA Y PREVISUALIZACIÓN PDF                       */}
+      {/* ===================================================================== */}
+      {activeTab === 'filler' && (
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 items-start">
+          <form
+            onSubmit={handleGeneratePdf}
+            className="lg:col-span-5 bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4"
+          >
+            <div className="border-b border-slate-200 pb-3 flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-slate-800">
+                  Redacción de Informe Médico
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Completa los campos del estudio para compilar el documento A4.
+                </p>
+              </div>
+              {activeOrder && (
+                <span className="bg-emerald-100 text-emerald-800 text-xs font-bold px-2.5 py-1 rounded-full">
+                  Atendiendo: {activeOrder.patient?.fullName}
+                </span>
+              )}
+            </div>
+
+            {fields.length === 0 ? (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                Este estudio aún no tiene campos dinámicos configurados. Ve a la pestaña{' '}
+                <strong>Constructor de Plantilla A4</strong> para diseñarla.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {fields.map((field) => (
+                  <div key={field.id}>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      {field.label}{' '}
+                      <span className="font-mono font-normal text-slate-400">({field.name})</span>
+                    </label>
+                    {field.type === 'textarea' ? (
+                      <textarea
+                        rows={5}
+                        placeholder={`Redactar ${field.label.toLowerCase()}...`}
+                        value={fieldValues[field.name] ?? ''}
+                        onChange={(e) =>
+                          setFieldValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+                        }
+                        className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    ) : (
+                      <input
+                        type={field.type}
+                        placeholder={`Ingresar ${field.label.toLowerCase()}...`}
+                        value={fieldValues[field.name] ?? ''}
+                        onChange={(e) =>
+                          setFieldValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+                        }
+                        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeOrder && (
+              <label className="flex items-center gap-2 pt-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={completeOrderOnGenerate}
+                  onChange={(e) => setCompleteOrderOnGenerate(e.target.checked)}
+                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                <CheckCheck className="w-4 h-4 text-emerald-600" />
+                Marcar orden de {activeOrder.patient?.fullName} como ATENDIDO al generar el PDF
+              </label>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading || fields.length === 0}
+              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white font-bold rounded-lg shadow flex items-center justify-center gap-2 transition"
+            >
+              <FileText className="w-4 h-4" />
+              {loading
+                ? 'Compilando PDF con Puppeteer...'
+                : activeOrder && completeOrderOnGenerate
+                ? 'Generar Informe PDF y Finalizar Atención'
+                : 'Generar Informe PDF A4'}
+            </button>
+          </form>
+
+          {/* Visor PDF */}
+          <div className="lg:col-span-7 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col h-[820px]">
+            <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-200">
+              <span className="text-xs font-bold uppercase text-slate-600">
+                Previsualización del Documento A4 Compilado
+              </span>
+              {pdfUrl && (
+                <a
+                  href={pdfUrl}
+                  download={`informe-ecomed-${Date.now()}.pdf`}
+                  className="text-xs bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-md font-semibold flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Descargar PDF
+                </a>
+              )}
+            </div>
+
+            {pdfUrl ? (
+              <iframe
+                src={pdfUrl}
+                title="Visor PDF Ecomed"
+                className="w-full flex-1 rounded border border-slate-200"
+              />
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center text-slate-400 text-sm border-2 border-dashed border-slate-200 rounded-lg">
+                <FileText className="w-10 h-10 mb-2 stroke-1" />
+                <p>
+                  Llama a un paciente o llena los campos a la izquierda y pulsa &ldquo;Generar
+                  Informe PDF A4&rdquo;
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MODO 2: CONSTRUCTOR DE PLANTILLAS A4 CON REACT-RND                    */}
       {/* ===================================================================== */}
       {activeTab === 'builder' && (
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 items-start">
-          {/* Panel Lateral de Controles (4 columnas) */}
           <div className="lg:col-span-4 space-y-5 bg-white p-5 rounded-xl shadow-sm border border-slate-200">
             <div>
               <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-2">
@@ -484,15 +797,14 @@ export default function A4ReportWorkspace() {
 
             <hr className="border-slate-200" />
 
-            {/* Propiedades del Rectángulo Seleccionado */}
             <div>
               <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-3">
                 2. Propiedades del Campo Activo
               </h2>
               {!selectedField ? (
                 <p className="text-xs text-slate-500 italic">
-                  Haz clic sobre cualquier bloque en la hoja A4 para configurar su nombre, etiqueta
-                  o tamaño de fuente.
+                  Haz clic sobre cualquier bloque en la hoja A4 para configurar su etiqueta o
+                  tamaño de fuente.
                 </p>
               ) : (
                 <div className="space-y-3 text-xs">
@@ -510,7 +822,7 @@ export default function A4ReportWorkspace() {
 
                   <div>
                     <label className="block font-semibold text-slate-600 mb-1">
-                      Nombre técnico (ID variable, solo letras/números/_):
+                      Nombre técnico (name):
                     </label>
                     <input
                       type="text"
@@ -558,7 +870,6 @@ export default function A4ReportWorkspace() {
                     </div>
                   </div>
 
-                  {/* Coordenadas en Porcentaje (Solo lectura / ajuste fino) */}
                   <div className="bg-slate-50 p-2.5 rounded border border-slate-200 grid grid-cols-2 gap-2 font-mono text-[11px]">
                     <div>X: {selectedField.xPercent}%</div>
                     <div>Y: {selectedField.yPercent}%</div>
@@ -579,14 +890,10 @@ export default function A4ReportWorkspace() {
 
             <hr className="border-slate-200" />
 
-            {/* HTML / Texto Base de la Hoja A4 */}
             <div>
               <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-1">
                 3. Encabezado / HTML Base Fijo
               </h2>
-              <p className="text-[11px] text-slate-500 mb-2">
-                Se renderiza al fondo de la hoja A4 con margen de 15mm.
-              </p>
               <textarea
                 rows={5}
                 value={baseText}
@@ -606,11 +913,10 @@ export default function A4ReportWorkspace() {
             </button>
           </div>
 
-          {/* Lienzo Simulado A4 (8 columnas) */}
+          {/* Lienzo A4 */}
           <div className="lg:col-span-8 flex flex-col items-center overflow-auto pb-10">
             <div className="mb-2 text-xs text-slate-500 font-medium">
-              Lienzo A4 Exacto (210mm × 297mm · {A4_WIDTH_PX}px × {A4_HEIGHT_PX}px) — Arrastra y
-              redimensiona los campos dentro de la hoja
+              Lienzo A4 Exacto (210mm × 297mm · {A4_WIDTH_PX}px × {A4_HEIGHT_PX}px)
             </div>
 
             <div
@@ -619,7 +925,6 @@ export default function A4ReportWorkspace() {
               className="relative bg-white shadow-2xl border border-slate-300 select-none overflow-hidden shrink-0"
               onClick={() => setSelectedFieldId(null)}
             >
-              {/* Capa de Fondo (idéntica a .base-text-layer en pdf.service.ts) */}
               <div
                 style={{
                   position: 'absolute',
@@ -635,7 +940,6 @@ export default function A4ReportWorkspace() {
                 dangerouslySetInnerHTML={{ __html: baseText }}
               />
 
-              {/* Capa Interactiva de Campos Dinámicos (react-rnd) */}
               {fields.map((field) => {
                 const pxX = (field.xPercent / 100) * A4_WIDTH_PX;
                 const pxY = (field.yPercent / 100) * A4_HEIGHT_PX;
@@ -731,108 +1035,6 @@ export default function A4ReportWorkspace() {
                 );
               })}
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================================================================== */}
-      {/* MODO 2: LLENADO CLÍNICO DEL MÉDICO Y PREVISUALIZACIÓN PDF             */}
-      {/* ===================================================================== */}
-      {activeTab === 'filler' && (
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 items-start">
-          {/* Formulario Clínico Dinámico (5 columnas) */}
-          <form
-            onSubmit={handleGeneratePdf}
-            className="lg:col-span-5 bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4"
-          >
-            <div className="border-b border-slate-200 pb-3">
-              <h2 className="text-base font-bold text-slate-800">
-                Redacción de Informe Médico
-              </h2>
-              <p className="text-xs text-slate-500">
-                Completa los campos configurados en la plantilla A4 para compilar el PDF final.
-              </p>
-            </div>
-
-            {fields.length === 0 ? (
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
-                Esta plantilla aún no tiene campos dinámicos. Ve a la pestaña{' '}
-                <strong>Constructor de Plantilla A4</strong>, añade algunos campos y guárdala.
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {fields.map((field) => (
-                  <div key={field.id}>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      {field.label}{' '}
-                      <span className="font-mono font-normal text-slate-400">({field.name})</span>
-                    </label>
-                    {field.type === 'textarea' ? (
-                      <textarea
-                        rows={5}
-                        placeholder={`Redactar ${field.label.toLowerCase()}...`}
-                        value={fieldValues[field.name] ?? ''}
-                        onChange={(e) =>
-                          setFieldValues((prev) => ({ ...prev, [field.name]: e.target.value }))
-                        }
-                        className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                      />
-                    ) : (
-                      <input
-                        type={field.type}
-                        placeholder={`Ingresar ${field.label.toLowerCase()}...`}
-                        value={fieldValues[field.name] ?? ''}
-                        onChange={(e) =>
-                          setFieldValues((prev) => ({ ...prev, [field.name]: e.target.value }))
-                        }
-                        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading || fields.length === 0}
-              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white font-bold rounded-lg shadow flex items-center justify-center gap-2 transition"
-            >
-              <FileText className="w-4 h-4" />
-              {loading ? 'Compilando PDF con Puppeteer...' : 'Generar Informe PDF A4'}
-            </button>
-          </form>
-
-          {/* Visor PDF en Tiempo Real (7 columnas) */}
-          <div className="lg:col-span-7 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col h-[820px]">
-            <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-200">
-              <span className="text-xs font-bold uppercase text-slate-600">
-                Previsualización del Documento A4 Compilado
-              </span>
-              {pdfUrl && (
-                <a
-                  href={pdfUrl}
-                  download={`informe-ecomed-${Date.now()}.pdf`}
-                  className="text-xs bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-md font-semibold flex items-center gap-1.5"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Descargar PDF
-                </a>
-              )}
-            </div>
-
-            {pdfUrl ? (
-              <iframe
-                src={pdfUrl}
-                title="Visor PDF Ecomed"
-                className="w-full flex-1 rounded border border-slate-200"
-              />
-            ) : (
-              <div className="flex-1 flex flex-col items-center justify-center text-slate-400 text-sm border-2 border-dashed border-slate-200 rounded-lg">
-                <FileText className="w-10 h-10 mb-2 stroke-1" />
-                <p>Llena los datos clínicos a la izquierda y pulsa &ldquo;Generar Informe PDF A4&rdquo;</p>
-              </div>
-            )}
           </div>
         </div>
       )}

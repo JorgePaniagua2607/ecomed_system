@@ -1,6 +1,9 @@
 import type { Response } from 'express';
 import { prisma } from '@ecomed/database';
-import { upsertReportFormatSchema, generateReportSchema } from '@ecomed/shared-types';
+import {
+  upsertReportFormatSchema,
+  generateReportSchema,
+} from '@ecomed/shared-types';
 import type { AuthRequest } from '../middlewares/auth.middleware';
 import { PdfService, type PositionalField } from '../services/pdf.service';
 
@@ -14,7 +17,12 @@ function getReportFormatFieldMap() {
     runtimeModels?.ReportFormat?.fields || [];
 
   const scalarStringFields = modelFields
-    .filter((f) => f.kind === 'scalar' && f.type === 'String' && !['id', 'studyServiceId'].includes(f.name))
+    .filter(
+      (f) =>
+        f.kind === 'scalar' &&
+        f.type === 'String' &&
+        !['id', 'studyServiceId'].includes(f.name)
+    )
     .map((f) => f.name);
 
   const jsonFields = modelFields
@@ -22,12 +30,22 @@ function getReportFormatFieldMap() {
     .map((f) => f.name);
 
   const textColumn =
-    scalarStringFields.find((n) => ['baseText', 'staticText', 'templateHtml', 'content', 'baseHtml'].includes(n)) ||
+    scalarStringFields.find((n) =>
+      [
+        'baseText',
+        'staticText',
+        'templateHtml',
+        'content',
+        'baseHtml',
+      ].includes(n)
+    ) ||
     scalarStringFields[0] ||
     'baseText';
 
   const jsonColumn =
-    jsonFields.find((n) => ['fields', 'rectangles', 'coordinates', 'fieldCoordinates'].includes(n)) ||
+    jsonFields.find((n) =>
+      ['fields', 'rectangles', 'coordinates', 'fieldCoordinates'].includes(n)
+    ) ||
     jsonFields[0] ||
     'fields';
 
@@ -37,7 +55,8 @@ function getReportFormatFieldMap() {
 function normalizeFormatRecord(record: any) {
   if (!record) return null;
   const { textColumn, jsonColumn } = getReportFormatFieldMap();
-  const baseText = record[textColumn] ?? record.baseText ?? record.staticText ?? '';
+  const baseText =
+    record[textColumn] ?? record.baseText ?? record.staticText ?? '';
   const fields = record[jsonColumn] ?? record.fields ?? record.rectangles ?? [];
 
   return {
@@ -70,7 +89,10 @@ export const getAllReportFormats = async (_req: AuthRequest, res: Response) => {
 };
 
 // Obtener la plantilla A4 vinculada a un studyServiceId específico
-export const getReportFormatByStudy = async (req: AuthRequest, res: Response) => {
+export const getReportFormatByStudy = async (
+  req: AuthRequest,
+  res: Response
+) => {
   try {
     const { studyServiceId } = req.params;
 
@@ -124,7 +146,8 @@ export const upsertReportFormat = async (req: AuthRequest, res: Response) => {
     if (!result.success) {
       return res.status(400).json({
         success: false,
-        message: 'Error de validación en las coordenadas o estructura de la plantilla A4.',
+        message:
+          'Error de validación en las coordenadas o estructura de la plantilla A4.',
         errors: result.error.errors,
       });
     }
@@ -138,7 +161,8 @@ export const upsertReportFormat = async (req: AuthRequest, res: Response) => {
     if (!study) {
       return res.status(404).json({
         success: false,
-        message: 'No se puede vincular la plantilla: el estudio especificado no existe.',
+        message:
+          'No se puede vincular la plantilla: el estudio especificado no existe.',
       });
     }
 
@@ -204,7 +228,7 @@ export const deleteReportFormat = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Fase 4.3: Generar y compilar el PDF A4 con los valores llenados por el médico
+// Fase 4.3 + Paso 3: Generar PDF A4, persistir PatientReport en BD y marcar orden ATENDIDO
 export const generateReportPdf = async (req: AuthRequest, res: Response) => {
   try {
     const payload = {
@@ -221,7 +245,7 @@ export const generateReportPdf = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const { studyServiceId, fieldValues } = parsed.data;
+    const { studyServiceId, orderId, completeOrder, fieldValues } = parsed.data;
 
     const rawFormat = await (prisma as any).reportFormat.findUnique({
       where: { studyServiceId },
@@ -244,6 +268,71 @@ export const generateReportPdf = async (req: AuthRequest, res: Response) => {
       fieldValues,
     });
 
+    // Persistir los fieldValues redactados vinculados a la orden (PatientReport) y pasar a ATENDIDO
+    if (orderId) {
+      try {
+        const orderRecord = await prisma.order.findUnique({
+          where: { id: orderId },
+          include: { items: true },
+        });
+
+        if (orderRecord) {
+          let targetItem =
+            orderRecord.items.find(
+              (item) => item.studyServiceId === studyServiceId
+            ) || orderRecord.items[0];
+
+          if (!targetItem) {
+            targetItem = await prisma.orderItem.create({
+              data: {
+                orderId: orderRecord.id,
+                studyServiceId,
+                priceApplied: rawFormat.studyService?.normalPrice ?? 0,
+              },
+            });
+          }
+
+          const authUser = (req as any).user;
+          let resolvedUserId: string | undefined =
+            authUser?.id || authUser?.userId || orderRecord.createdById;
+
+          if (!resolvedUserId) {
+            const firstUser = await prisma.user.findFirst();
+            resolvedUserId = firstUser?.id;
+          }
+
+          if (targetItem && resolvedUserId) {
+            await prisma.patientReport.upsert({
+              where: { orderItemId: targetItem.id },
+              update: {
+                formatId: rawFormat.id,
+                generatedById: resolvedUserId,
+                fieldValues: fieldValues as any,
+              },
+              create: {
+                orderItemId: targetItem.id,
+                formatId: rawFormat.id,
+                generatedById: resolvedUserId,
+                fieldValues: fieldValues as any,
+              },
+            });
+          }
+
+          if (completeOrder) {
+            await prisma.order.update({
+              where: { id: orderId },
+              data: { status: 'ATENDIDO' },
+            });
+          }
+        }
+      } catch (persistErr) {
+        console.error(
+          '[generateReportPdf] Aviso al persistir PatientReport:',
+          persistErr
+        );
+      }
+    }
+
     const studySlug = (rawFormat.studyService?.name || 'estudio')
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-');
@@ -262,6 +351,150 @@ export const generateReportPdf = async (req: AuthRequest, res: Response) => {
       success: false,
       message: 'Error interno al generar el documento PDF con Puppeteer.',
       error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+// Paso 3: Listar historial de informes médicos emitidos (PatientReport)
+export const getEmittedReportsHistory = async (
+  _req: AuthRequest,
+  res: Response
+) => {
+  try {
+    const reports = await prisma.patientReport.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        orderItem: {
+          include: {
+            studyService: true,
+            order: {
+              include: {
+                patient: true,
+                associatedDoctor: true,
+              },
+            },
+          },
+        },
+        format: {
+          include: { studyService: true },
+        },
+        generatedBy: {
+          select: {
+            id: true,
+            username: true,
+            fullName: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    const formatted = reports.map((rep) => {
+      const ord = rep.orderItem?.order;
+      const study =
+        rep.orderItem?.studyService || rep.format?.studyService || null;
+
+      return {
+        id: rep.id,
+        orderItemId: rep.orderItemId,
+        orderId: ord?.id || rep.orderItem?.orderId || '',
+        orderNumber:
+          ord?.orderNumber ||
+          (rep.orderItem?.orderId
+            ? rep.orderItem.orderId.slice(0, 8)
+            : 'S/N'),
+        orderStatus: ord?.status || 'ATENDIDO',
+        origin: ord?.origin || 'POR_SU_CUENTA',
+        patientId: ord?.patientId || '',
+        patientName: ord?.patient?.fullName || 'Paciente',
+        patientPhone: ord?.patient?.phone || '',
+        associatedDoctorName: ord?.associatedDoctor?.fullName || null,
+        studyServiceId: study?.id || rep.format?.studyServiceId || '',
+        studyName: study?.name || 'Estudio Clínico',
+        serviceType: study?.serviceType || 'HACER_ECOGRAFIA',
+        reportCategory: study?.reportCategory || null,
+        generatedByName:
+          rep.generatedBy?.fullName ||
+          rep.generatedBy?.username ||
+          'Especialista Ecomed',
+        fieldValues: (rep.fieldValues as Record<string, any>) || {},
+        createdAt: rep.createdAt,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: formatted,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener el historial de informes médicos emitidos.',
+    });
+  }
+};
+
+// Paso 3: Reimprimir / Recompilar un PDF emitido anteriormente desde su registro en PatientReport
+export const regenerateHistoricalReportPdf = async (
+  req: AuthRequest,
+  res: Response
+) => {
+  try {
+    const { reportId } = req.params;
+
+    const report = await prisma.patientReport.findUnique({
+      where: { id: reportId },
+      include: {
+        format: {
+          include: { studyService: true },
+        },
+        orderItem: {
+          include: {
+            studyService: true,
+            order: { include: { patient: true } },
+          },
+        },
+      },
+    });
+
+    if (!report || !report.format) {
+      return res.status(404).json({
+        success: false,
+        message: 'El informe histórico solicitado no fue encontrado.',
+      });
+    }
+
+    const normalized = normalizeFormatRecord(report.format);
+    const fields: PositionalField[] = normalized.fields;
+    const savedValues = (report.fieldValues as Record<string, any>) || {};
+
+    const pdfBuffer = await PdfService.renderA4Pdf({
+      baseText: normalized.baseText,
+      fields,
+      fieldValues: savedValues,
+    });
+
+    const studySlug = (
+      report.orderItem?.studyService?.name ||
+      report.format.studyService?.name ||
+      'historial'
+    )
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-');
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="reimpresion-${studySlug}-${Date.now()}.pdf"`
+    );
+    res.setHeader('Content-Length', pdfBuffer.length);
+
+    return res.status(200).end(pdfBuffer);
+  } catch (error) {
+    console.error('[regenerateHistoricalReportPdf] Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error interno al reimprimir el informe PDF histórico.',
     });
   }
 };

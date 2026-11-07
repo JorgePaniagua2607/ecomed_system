@@ -244,6 +244,7 @@ export type UpsertReportFormatDTO = z.infer<typeof upsertReportFormatSchema>;
 export const generateReportSchema = z.object({
   studyServiceId: z.string().min(1, 'El ID del estudio (studyServiceId) es requerido'),
   orderId: z.string().optional(),
+  completeOrder: z.boolean().optional().default(false),
   fieldValues: z.record(
     z.string(),
     z.union([z.string(), z.number(), z.boolean(), z.null(), z.undefined()])
