@@ -623,6 +623,14 @@ export default function EcomedSuite() {
   }, [loadAllData]);
 
   useEffect(() => {
+    const onUnauthorized = () => {
+      setToken("");
+    };
+    window.addEventListener("ecomed:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("ecomed:unauthorized", onUnauthorized);
+  }, []);
+
+  useEffect(() => {
     if (!token) return;
     const timer = setInterval(() => {
       loadAllData();
