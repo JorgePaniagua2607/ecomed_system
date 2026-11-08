@@ -27,15 +27,18 @@ app.use(cors());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10mb' }));
 
-// Healthcheck
-app.get('/api/v1/health', (_req, res) => {
+// Healthchecks compatibles con Fase 1 (/api/health) y Fase 5 (/api/v1/health)
+const healthHandler = (_req: express.Request, res: express.Response) => {
   res.json({
     success: true,
-    service: 'Ecomed Clinical API',
     status: 'OK',
+    message: 'Servidor API Ecomed operativo.',
     timestamp: new Date().toISOString(),
   });
-});
+};
+
+app.get('/api/health', healthHandler);
+app.get('/api/v1/health', healthHandler);
 
 // Rutas de las Fases 1 a 5
 app.use('/api/v1/auth', authRoutes);
@@ -46,10 +49,16 @@ app.use('/api/v1/patients', patientRoutes);
 app.use('/api/v1/orders', orderRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/queue', queueRoutes);
-
-// Montaje dual para Plantillas A4 (/report-formats) y Motor/Historial PDF (/reports)
 app.use('/api/v1/report-formats', reportFormatRoutes);
 app.use('/api/v1/reports', reportFormatRoutes);
+
+// Manejador 404 en JSON
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Ruta no encontrada en la API: ${req.method} ${req.originalUrl}`,
+  });
+});
 
 app.listen(PORT, () => {
   console.log(`Servidor API corriendo en http://localhost:${PORT}`);

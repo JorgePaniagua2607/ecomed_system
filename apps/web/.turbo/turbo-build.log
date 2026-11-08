@@ -1,22 +1,25 @@
-$ next build
+
+> web@0.1.0 build /home/jorge/Projects/sistemas/ecomed/apps/web
+> next build
+
 [1m[38;2;173;127;168m▲ Next.js 16.4.3[39m[22m (Turbopack)
-[32m[1m✓[22m[39m Running next.config.ts took 28ms
+[32m[1m✓[22m[39m Running next.config.ts took 229ms
 - Cache Components enabled
 - Partial Prefetching enabled
 
 [37m[1m [22m[39m Creating an optimized production build ...
-[32m[1m✓[22m[39m Compiled successfully in 152ms
+[32m[1m✓[22m[39m Compiled successfully in 1069ms
 [37m[1m [22m[39m Running TypeScript ...
-[37m[1m [22m[39m Finished TypeScript in 1693ms ...
+[37m[1m [22m[39m Finished TypeScript in 1969ms ...
 [37m[1m [22m[39m Collecting page data using 5 workers ...
-[32m[1m✓[22m[39m Collecting page data using 5 workers in 442ms
+[32m[1m✓[22m[39m Collecting page data using 5 workers in 417ms
 [37m[1m [22m[39m Generating static pages using 5 workers (0/4) ...
 [37m[1m [22m[39m Generating static pages using 5 workers (1/4) 
 [37m[1m [22m[39m Generating static pages using 5 workers (2/4) 
 [37m[1m [22m[39m Generating static pages using 5 workers (3/4) 
-[32m[1m✓[22m[39m Generating static pages using 5 workers (4/4) in 581ms
+[32m[1m✓[22m[39m Generating static pages using 5 workers (4/4) in 504ms
 [37m[1m [22m[39m Finalizing page optimization ...
-[32m[1m✓[22m[39m Finalizing page optimization in 6ms
+[32m[1m✓[22m[39m Finalizing page optimization in 4ms
 
 [4mRoute (app)[24m
 ┌ ○ /

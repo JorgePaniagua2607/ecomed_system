@@ -1,1 +1,30 @@
-node_modules
+# Dependencias
+node_modules/
+.pnp
+.pnp.js
+
+# Compilación y Caché de Turborepo / Next.js / TypeScript
+.turbo/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Variables de entorno
+.env
+.env.*
+!.env.example
+
+# Archivos generados en pruebas PDF
+*.pdf
+apps/api/test-informe-a4.pdf
+
+# Logs y Sistema Operativo
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db

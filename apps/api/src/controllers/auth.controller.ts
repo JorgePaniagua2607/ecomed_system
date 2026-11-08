@@ -8,7 +8,7 @@ import type { AuthRequest } from '../middlewares/auth.middleware';
 const JWT_SECRET = process.env.JWT_SECRET || 'ecomed_super_secret_jwt_key_2026';
 const JWT_EXPIRES_IN = '12h';
 
-// Inicio de sesión y emisión de token JWT con rol y permiso canApplyPromotions
+// Inicio de sesión con detección automática de contraseña inicial igual al CI
 export const login = async (req: AuthRequest, res: Response) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
@@ -41,35 +41,70 @@ export const login = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    // Regla Fase 1 y 2.1: Detectar si el usuario ingresó usando su CI como contraseña
+    const isUsingCiAsPassword =
+      password.trim() === user.ci.trim() ||
+      (await bcrypt.compare(user.ci, user.passwordHash));
+
+    const canApplyPromotions =
+      user.role === 'ADMIN' ? true : Boolean(user.canApplyPromotions);
+
     const tokenPayload = {
       id: user.id,
       userId: user.id,
       username: user.username,
       role: user.role,
       shift: user.shift,
-      canApplyPromotions:
-        user.role === 'ADMIN' ? true : Boolean(user.canApplyPromotions),
+      canApplyPromotions,
+      mustChangePassword: isUsingCiAsPassword,
     };
 
     const token = jwt.sign(tokenPayload, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN,
     });
 
+    const securityAlertMessage = isUsingCiAsPassword
+      ? 'Estás utilizando tu Carnet de Identidad (CI) como contraseña. Por seguridad, debes cambiarla.'
+      : null;
+
+    const userResponse = {
+      id: user.id,
+      username: user.username,
+      fullName: user.fullName,
+      ci: user.ci,
+      phone: user.phone,
+      email: user.email,
+      role: user.role,
+      shift: user.shift,
+      canApplyPromotions,
+      mustChangePassword: isUsingCiAsPassword,
+      requiresPasswordChange: isUsingCiAsPassword,
+      isDefaultPassword: isUsingCiAsPassword,
+      isInitialPassword: isUsingCiAsPassword,
+    };
+
     res.json({
       success: true,
-      message: `Bienvenido(a) ${user.fullName}`,
+      message: isUsingCiAsPassword
+        ? `Bienvenido(a) ${user.fullName}. Se detectó el uso de su CI como contraseña inicial; se recomienda cambiarla.`
+        : `Bienvenido(a) ${user.fullName}`,
       token,
-      user: {
-        id: user.id,
-        username: user.username,
-        fullName: user.fullName,
-        ci: user.ci,
-        phone: user.phone,
-        email: user.email,
-        role: user.role,
-        shift: user.shift,
-        canApplyPromotions:
-          user.role === 'ADMIN' ? true : Boolean(user.canApplyPromotions),
+      mustChangePassword: isUsingCiAsPassword,
+      requiresPasswordChange: isUsingCiAsPassword,
+      isDefaultPassword: isUsingCiAsPassword,
+      isInitialPassword: isUsingCiAsPassword,
+      securityAlert: securityAlertMessage,
+      warning: securityAlertMessage,
+      user: userResponse,
+      data: {
+        token,
+        mustChangePassword: isUsingCiAsPassword,
+        requiresPasswordChange: isUsingCiAsPassword,
+        isDefaultPassword: isUsingCiAsPassword,
+        isInitialPassword: isUsingCiAsPassword,
+        securityAlert: securityAlertMessage,
+        warning: securityAlertMessage,
+        user: userResponse,
       },
     });
   } catch (error) {
@@ -116,7 +151,6 @@ export const changePassword = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Si el cliente envía su contraseña actual, la verificamos
     if (currentPassword && currentPassword.trim().length > 0) {
       const matches = await bcrypt.compare(
         currentPassword,
@@ -140,6 +174,10 @@ export const changePassword = async (req: AuthRequest, res: Response) => {
     res.json({
       success: true,
       message: 'Contraseña actualizada exitosamente.',
+      data: {
+        mustChangePassword: false,
+        requiresPasswordChange: false,
+      },
     });
   } catch (error) {
     res.status(500).json({
@@ -147,4 +185,13 @@ export const changePassword = async (req: AuthRequest, res: Response) => {
       message: 'Error interno al actualizar la contraseña.',
     });
   }
+};
+
+// Perfil del usuario autenticado (GET /me)
+export const getMe = async (req: AuthRequest, res: Response) => {
+  return res.json({
+    success: true,
+    data: req.user,
+    user: req.user,
+  });
 };

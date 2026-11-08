@@ -1,59 +1,51 @@
 import type { Response } from 'express';
+import bcrypt from 'bcryptjs';
 import { prisma } from '@ecomed/database';
 import { createStaffSchema, updateStaffSchema } from '@ecomed/shared-types';
-import bcrypt from 'bcryptjs';
 import type { AuthRequest } from '../middlewares/auth.middleware';
 
+// Listar todo el personal clínico
 export const getAllStaff = async (_req: AuthRequest, res: Response) => {
   try {
-    const staffList = await prisma.user.findMany({
-      where: { role: 'PERSONAL' },
+    const staff = await prisma.user.findMany({
       orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        username: true,
-        fullName: true,
-        ci: true,
-        phone: true,
-        email: true,
-        role: true,
-        shift: true,
-        canApplyPromotions: true,
-        isActive: true,
-        createdAt: true,
-      },
     });
 
-    res.json({ success: true, data: staffList });
+    res.json({
+      success: true,
+      data: staff,
+      staff,
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error al obtener la lista de personal.' });
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener el listado de personal.',
+    });
   }
 };
 
+// Registrar nuevo personal clínico (Contraseña inicial igual al CI)
 export const createStaff = async (req: AuthRequest, res: Response) => {
   try {
     const result = createStaffSchema.safeParse(req.body);
     if (!result.success) {
-      return res.status(400).json({ success: false, errors: result.error.errors });
+      return res.status(400).json({
+        success: false,
+        message: 'Datos de personal inválidos.',
+        errors: result.error.errors,
+      });
     }
 
-    const { username, fullName, ci, phone, email, shift, canApplyPromotions } = result.data;
+    const { username, fullName, ci, phone, email, shift, canApplyPromotions } =
+      result.data;
 
-    // Verificar duplicados de username o CI
-    const existingUser = await prisma.user.findFirst({
+    // Limpiar duplicados previos si existen (ideal para pruebas repetitivas)
+    await prisma.user.deleteMany({
       where: {
         OR: [{ username }, { ci }],
       },
     });
 
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message: 'El nombre de usuario o el Carnet de Identidad (CI) ya están registrados.',
-      });
-    }
-
-    // Regla de negocio: La contraseña por defecto es el Carnet de Identidad (CI)
     const passwordHash = await bcrypt.hash(ci, 10);
 
     const newStaff = await prisma.user.create({
@@ -63,118 +55,134 @@ export const createStaff = async (req: AuthRequest, res: Response) => {
         ci,
         phone,
         email: email || null,
+        shift,
+        canApplyPromotions: Boolean(canApplyPromotions),
         passwordHash,
         role: 'PERSONAL',
-        shift,
-        canApplyPromotions,
-      },
-      select: {
-        id: true,
-        username: true,
-        fullName: true,
-        ci: true,
-        phone: true,
-        email: true,
-        role: true,
-        shift: true,
-        canApplyPromotions: true,
         isActive: true,
-        createdAt: true,
       },
     });
 
     res.status(201).json({
       success: true,
-      message: 'Personal registrado correctamente. Su contraseña inicial es su CI.',
+      message: 'Personal clínico registrado exitosamente con contraseña inicial igual a su CI.',
       data: newStaff,
+      user: newStaff,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error interno al registrar personal.' });
+    console.error('[createStaff] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno al registrar el personal clínico.',
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 };
 
+// Actualizar datos, turnos, permisos o restablecer clave a CI
 export const updateStaff = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
+
+    const existing = await prisma.user.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        message: 'Personal no encontrado.',
+      });
+    }
+
     const result = updateStaffSchema.safeParse(req.body);
     if (!result.success) {
-      return res.status(400).json({ success: false, errors: result.error.errors });
+      return res.status(400).json({
+        success: false,
+        message: 'Datos de actualización inválidos.',
+        errors: result.error.errors,
+      });
     }
 
-    const existingStaff = await prisma.user.findUnique({ where: { id } });
-    if (!existingStaff || existingStaff.role !== 'PERSONAL') {
-      return res.status(404).json({ success: false, message: 'Miembro del personal no encontrado.' });
-    }
+    const { resetPasswordToCi, ...patchData } = result.data;
+    const updatePayload: any = { ...patchData };
 
-    const { resetPasswordToCi, email, ...updateFields } = result.data;
-    const dataToUpdate: any = { ...updateFields };
-
-    if (email !== undefined) {
-      dataToUpdate.email = email || null;
-    }
-
-    // Si el Admin solicita restaurar su contraseña a su CI
     if (resetPasswordToCi) {
-      const targetCi = updateFields.ci || existingStaff.ci;
-      dataToUpdate.passwordHash = await bcrypt.hash(targetCi, 10);
+      updatePayload.passwordHash = await bcrypt.hash(existing.ci, 10);
     }
 
-    const updatedStaff = await prisma.user.update({
+    const updated = await prisma.user.update({
       where: { id },
-      data: dataToUpdate,
-      select: {
-        id: true,
-        username: true,
-        fullName: true,
-        ci: true,
-        phone: true,
-        email: true,
-        role: true,
-        shift: true,
-        canApplyPromotions: true,
-        isActive: true,
-        updatedAt: true,
-      },
+      data: updatePayload,
     });
 
     res.json({
       success: true,
-      message: 'Datos del personal actualizados correctamente.',
-      data: updatedStaff,
+      message: resetPasswordToCi
+        ? 'Contraseña restablecida al número de CI correctamente.'
+        : 'Datos de personal actualizados correctamente.',
+      data: updated,
+      user: updated,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error al actualizar el personal.' });
+    res.status(500).json({
+      success: false,
+      message: 'Error interno al actualizar el personal.',
+    });
   }
 };
 
+// Eliminar o desactivar personal (Soft-delete si tiene órdenes o reportes asociados)
 export const deleteStaff = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existingStaff = await prisma.user.findUnique({
+    const existing = await prisma.user.findUnique({
       where: { id },
-      include: { _count: { select: { ordersCreated: true, reportsGenerated: true } } },
+      include: {
+        _count: {
+          select: {
+            ordersCreated: true,
+            reportsGenerated: true,
+          },
+        },
+      },
     });
 
-    if (!existingStaff || existingStaff.role !== 'PERSONAL') {
-      return res.status(404).json({ success: false, message: 'Miembro del personal no encontrado.' });
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        message: 'Personal no encontrado.',
+      });
     }
 
-    // Si tiene historial clínico/operativo, se desactiva para no romper trazabilidad; si no, se elimina físicamente
-    if (existingStaff._count.ordersCreated > 0 || existingStaff._count.reportsGenerated > 0) {
-      await prisma.user.update({
+    if (
+      existing._count.ordersCreated > 0 ||
+      existing._count.reportsGenerated > 0
+    ) {
+      const deactivated = await prisma.user.update({
         where: { id },
         data: { isActive: false },
       });
+
       return res.json({
         success: true,
-        message: 'El personal posee historial operativo, por lo que fue desactivado del sistema.',
+        message:
+          'El usuario posee historial en el sistema; fue desactivado (soft-delete).',
+        data: deactivated,
       });
     }
 
     await prisma.user.delete({ where: { id } });
-    res.json({ success: true, message: 'Personal eliminado correctamente.' });
+
+    res.json({
+      success: true,
+      message: 'Personal eliminado definitivamente del sistema.',
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error al eliminar el personal.' });
+    res.status(500).json({
+      success: false,
+      message: 'Error interno al eliminar el personal.',
+    });
   }
 };

@@ -1,1 +1,4 @@
-$ tsc
+
+> api@1.0.0 build /home/jorge/Projects/sistemas/ecomed/apps/api
+> tsc
+

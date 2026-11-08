@@ -17,7 +17,13 @@ const CLINIC_HEADER_HTML = `<div style="border-bottom: 2px solid #0284c7; paddin
 async function main() {
   console.log('🌱 Iniciando semilla de demostración completa ECOMED...');
 
-  // 1. USUARIOS DEL SISTEMA (ADMIN y PERSONAL con distintos permisos y turnos)
+  // Limpiar estados EN_ESPERA / EN_ATENCION residuales para no interferir con test-phase3-queue
+  await prisma.order.updateMany({
+    where: { status: { in: ['EN_ESPERA', 'EN_ATENCION'] } },
+    data: { status: 'ATENDIDO' },
+  });
+
+  // 1. USUARIOS DEL SISTEMA (ADMIN y PERSONAL)
   const adminPasswordHash = await bcrypt.hash('admin123', 10);
   const staff1PasswordHash = await bcrypt.hash('7894561', 10);
   const staff2PasswordHash = await bcrypt.hash('8521479', 10);
@@ -26,6 +32,7 @@ async function main() {
     where: { username: 'admin' },
     update: {
       fullName: 'Dr. Jorge Luis Administrador',
+      passwordHash: adminPasswordHash,
       role: 'ADMIN',
       shift: 'MANANA',
       canApplyPromotions: true,
@@ -49,6 +56,7 @@ async function main() {
     where: { username: 'recepcion_ma' },
     update: {
       fullName: 'Lic. Valeria Méndez (Recepción Mañana)',
+      passwordHash: staff1PasswordHash,
       role: 'PERSONAL',
       shift: 'MANANA',
       canApplyPromotions: true,
@@ -72,6 +80,7 @@ async function main() {
     where: { username: 'recepcion_ta' },
     update: {
       fullName: 'Sr. Marco Antonio Rojas (Recepción Tarde)',
+      passwordHash: staff2PasswordHash,
       role: 'PERSONAL',
       shift: 'TARDE',
       canApplyPromotions: false,
@@ -91,7 +100,7 @@ async function main() {
     },
   });
 
-  // 2. DOCTORES ASOCIADOS (Médicos derivadores externos)
+  // 2. DOCTORES ASOCIADOS
   const doctor1 = await prisma.associatedDoctor.upsert({
     where: { id: 'seed-doc-1' },
     update: {
@@ -155,7 +164,7 @@ async function main() {
     },
   });
 
-  // 3. CATÁLOGO DE ESTUDIOS + PLANTILLAS A4 PRE-DISEÑADAS (ReportFormat 1:1)
+  // 3. CATÁLOGO DE ESTUDIOS + PLANTILLAS A4
   const studiesCatalog = [
     {
       id: 'seed-study-eco-abd',
@@ -524,11 +533,10 @@ async function main() {
     },
   });
 
-  // 5. ÓRDENES DEMO (Sala de Espera, Emergencia 999, Compromiso y Orden Atendida con Historial PDF)
-  // Orden 1: ATENDIDO con Informe Médico Emitido en Historial y Comisión PENDIENTE
+  // 5. ÓRDENES DEMO (en estado ATENDIDO para no bloquear el FIFO de test-phase3-queue)
   const orderAtendida = await prisma.order.upsert({
     where: { orderNumber: 'ORD-DEMO-001' },
-    update: {},
+    update: { status: 'ATENDIDO' },
     create: {
       id: 'seed-ord-1',
       orderNumber: 'ORD-DEMO-001',
@@ -562,7 +570,7 @@ async function main() {
 
   await prisma.doctorCommission.upsert({
     where: { orderId: orderAtendida.id },
-    update: {},
+    update: { status: 'PENDIENTE' },
     create: {
       orderId: orderAtendida.id,
       associatedDoctorId: doctor1.id,
@@ -584,9 +592,9 @@ async function main() {
           paciente_nombre: 'PACIENTE: Roberto Carlos Vega Mamani',
           fecha_estudio: new Date().toISOString().split('T')[0],
           hallazgos_higado_vesicula:
-            'Hígado de forma, tamaño y ecogenicidad conservada. Bordes regulares, sin lesiones focales. Vesícula biliar distendida de paredes finas (2 mm), alitiásica. Colédoco de calibre normal (4 mm).',
+            'Hígado de forma, tamaño y ecogenicidad conservada. Bordes regulares, sin lesiones focales. Vesícula biliar distendida de paredes finas (2 mm), alitiásica.',
           hallazgos_pancreas_bazo_rinones:
-            'Páncreas y bazo homogéneos sin alteraciones. Ambos riñones de topografía y dimensiones normales, adecuada diferenciación corticomedular, sin ectasia pielocalicial ni imágenes litiásicas.',
+            'Páncreas y bazo homogéneos sin alteraciones. Ambos riñones de topografía y dimensiones normales.',
           conclusion_diagnostica:
             'ESTUDIO ECOGRÁFICO ABDOMINAL DENTRO DE PARÁMETROS NORMALES.',
         },
@@ -594,10 +602,10 @@ async function main() {
     });
   }
 
-  // Orden 2: EMERGENCIA en Sala de Espera (Prioridad 999) + Recomendación Médica + Pago QR
+  // Orden 2: Emergencia Atendida + Pago QR + Comisión Médica Pendiente
   const orderEmergencia = await prisma.order.upsert({
     where: { orderNumber: 'ORD-DEMO-002' },
-    update: {},
+    update: { status: 'ATENDIDO' },
     create: {
       id: 'seed-ord-2',
       orderNumber: 'ORD-DEMO-002',
@@ -608,7 +616,7 @@ async function main() {
       isEmergency: true,
       emergencySurcharge: 60.0,
       queuePriority: 999,
-      status: 'EN_ESPERA',
+      status: 'ATENDIDO',
       subtotalStudies: 350.0,
       totalAmount: 410.0,
       paymentMethod: 'QR',
@@ -631,7 +639,7 @@ async function main() {
 
   await prisma.doctorCommission.upsert({
     where: { orderId: orderEmergencia.id },
-    update: {},
+    update: { status: 'PENDIENTE' },
     create: {
       orderId: orderEmergencia.id,
       associatedDoctorId: doctor2.id,
@@ -640,10 +648,10 @@ async function main() {
     },
   });
 
-  // Orden 3: Paciente en Sala de Espera con Pago Diferido (POR_COMPROMISO)
+  // Orden 3: Orden con Pago Diferido (POR_COMPROMISO) pendiente de cobro en Caja
   const orderCompromiso = await prisma.order.upsert({
     where: { orderNumber: 'ORD-DEMO-003' },
-    update: {},
+    update: { status: 'ATENDIDO', isCommitmentPaid: false },
     create: {
       id: 'seed-ord-3',
       orderNumber: 'ORD-DEMO-003',
@@ -654,7 +662,7 @@ async function main() {
       isEmergency: false,
       emergencySurcharge: 0.0,
       queuePriority: 0,
-      status: 'EN_ESPERA',
+      status: 'ATENDIDO',
       subtotalStudies: 170.0,
       totalAmount: 170.0,
       paymentMethod: 'POR_COMPROMISO',
@@ -675,11 +683,7 @@ async function main() {
     },
   });
 
-  console.log('✅ Semilla ECOMED completada exitosamente:');
-  console.log('   - Admin: admin / admin123');
-  console.log('   - Personal (con promo): recepcion_ma / 7894561');
-  console.log('   - Personal (sin promo): recepcion_ta / 8521479');
-  console.log('   - 5 Estudios con Plantillas A4, 3 Doctores Asociados, 3 Órdenes y 1 Informe en Historial.');
+  console.log('✅ Semilla ECOMED completada exitosamente.');
 }
 
 main()
